@@ -34,8 +34,8 @@ def parse_args():
     parser.add_argument(
         "--colors",
         nargs="+",
-        default=["yellow", "light-blue"],
-        help="Highlight colors to include: yellow, light-blue",
+        default=["all"],
+        help="Highlight colors to include: yellow, green, blue, light-blue, or all",
     )
     parser.add_argument(
         "--format",
@@ -44,16 +44,10 @@ def parse_args():
         help="Output format",
     )
     parser.add_argument(
-        "--yellow-threshold",
+        "--color-threshold",
         type=float,
         default=0.35,
-        help="RGB distance threshold for yellow",
-    )
-    parser.add_argument(
-        "--light-blue-threshold",
-        type=float,
-        default=0.35,
-        help="RGB distance threshold for light blue",
+        help="RGB distance threshold for colors",
     )
     return parser.parse_args()
 
@@ -68,7 +62,7 @@ def intersects(b1, b2):
     return not (x1 < a0 or a1 < x0 or y1 < b0 or b1_ < y0)
 
 
-def extract_comments(page):
+def extract_lines(page):
     text_dict = page.get_text("dict")
     lines = []
     for block in text_dict.get("blocks", []):
@@ -80,25 +74,9 @@ def extract_comments(page):
             if not line_text:
                 continue
             bbox = line.get("bbox")
-            lines.append({"text": line_text, "bbox": bbox})
-    lines.sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
-
-    comments = []
-    current = None
-    for ln in lines:
-        m = re.match(r"^(\d+)\.\s*(.*)$", ln["text"])
-        if m:
-            if current:
-                comments.append(current)
-            num = m.group(1)
-            current = {"num": num, "lines": [ln], "text": ln["text"]}
-        else:
-            if current:
-                current["lines"].append(ln)
-                current["text"] += " " + ln["text"]
-    if current:
-        comments.append(current)
-    return comments
+            lines.append({"text": line_text, "lines": [{"text": line_text, "bbox": bbox}]})
+    lines.sort(key=lambda x: (x["lines"][0]["bbox"][1], x["lines"][0]["bbox"][0]))
+    return lines
 
 
 def extract_highlight_text(page, rect):
@@ -109,12 +87,96 @@ def extract_highlight_text(page, rect):
     return lines
 
 
+def classify_color(c, threshold, target_colors, yellow_rgb, green_rgb, blue_rgb, light_blue_rgb):
+    if c is None:
+        return []
+    labels = []
+    if "yellow" in target_colors and is_color(c, yellow_rgb, threshold):
+        labels.append("yellow")
+    if "green" in target_colors and is_color(c, green_rgb, threshold):
+        labels.append("green")
+    if (
+        ("blue" in target_colors or "light-blue" in target_colors)
+        and (is_color(c, blue_rgb, threshold) or is_color(c, light_blue_rgb, threshold))
+    ):
+        labels.append("blue")
+    return labels
+
+
+def rect_to_tuple(rect):
+    return (rect.x0, rect.y0, rect.x1, rect.y1)
+
+
+def normalize_label(label):
+    return "blue" if label == "light-blue" else label
+
+
+def classify_single_color(c, threshold, target_colors, yellow_rgb, green_rgb, blue_rgb, light_blue_rgb):
+    if c is None:
+        return None
+    if "yellow" in target_colors and is_color(c, yellow_rgb, threshold):
+        return "yellow"
+    if "green" in target_colors and is_color(c, green_rgb, threshold):
+        return "green"
+    if ("blue" in target_colors or "light-blue" in target_colors) and (
+        is_color(c, blue_rgb, threshold) or is_color(c, light_blue_rgb, threshold)
+    ):
+        return "blue"
+    return None
+
+
+def has_unhighlighted_gap_between(lines, upper_y, lower_y):
+    for line in lines:
+        y0 = line["lines"][0]["bbox"][1]
+        y1 = line["lines"][0]["bbox"][3]
+        if y0 > lower_y or y1 < upper_y:
+            continue
+        if line.get("has_unhighlighted_gap"):
+            return True
+    return False
+
+
+def has_unhighlighted_after_between(lines, upper_y, lower_y):
+    for line in lines:
+        y0 = line["lines"][0]["bbox"][1]
+        y1 = line["lines"][0]["bbox"][3]
+        if y0 > lower_y or y1 < upper_y:
+            continue
+        if line.get("has_unhighlighted_after"):
+            return True
+    return False
+
+
+def should_merge_rects(prev_rect, next_rect, lines):
+    prev_height = max(1.0, prev_rect[3] - prev_rect[1])
+    y_gap = next_rect[1] - prev_rect[3]
+    vertical_overlap = next_rect[1] <= prev_rect[3] and next_rect[3] >= prev_rect[1]
+    same_line = vertical_overlap or abs(next_rect[1] - prev_rect[1]) <= prev_height * 0.5
+
+    if same_line:
+        x_gap = next_rect[0] - prev_rect[2]
+        return x_gap <= max(6.0, prev_height * 0.6)
+
+    if y_gap > max(4.0, prev_height * 0.8):
+        return False
+
+    if has_unhighlighted_after_between(lines, prev_rect[1], next_rect[1]):
+        return False
+
+    return True
+
+
 def main():
     args = parse_args()
     pymupdf = require_pymupdf()
 
+    all_color_names = {"yellow", "green", "blue", "light-blue"}
     target_colors = set(args.colors)
+    if "all" in target_colors:
+        target_colors = set(all_color_names)
     yellow_rgb = (1.0, 1.0, 0.0)
+    green_rgb = (0.0, 1.0, 0.0)
+    blue_rgb = (0.0, 1.0, 1.0)
     light_blue_rgb = (0.6, 0.8, 1.0)
 
     doc = pymupdf.open(args.pdf)
@@ -144,86 +206,110 @@ def main():
     results = []
     seen = set()
     for pi, page in enumerate(doc, start=1):
-        comments = extract_comments(page)
-        for c in comments:
-            c["page"] = pi
-            c["highlight"] = set()
-            for h in highlights:
-                if h["page"] != pi:
-                    continue
-                for ln in c["lines"]:
-                    if intersects(ln["bbox"], h["rect"]):
-                        if "yellow" in target_colors and is_color(
-                            h["color"], yellow_rgb, args.yellow_threshold
-                        ):
-                            c["highlight"].add("yellow")
-                        if "light-blue" in target_colors and is_color(
-                            h["color"], light_blue_rgb, args.light_blue_threshold
-                        ):
-                            c["highlight"].add("light blue")
-                        break
-
-            if c["highlight"]:
-                item = {
-                    "page": c["page"],
-                    "comment": c["num"],
-                    "colors": sorted(c["highlight"]),
-                    "text": c["text"],
-                }
-                key = (item["page"], item["comment"], item["text"])
-                if key not in seen:
-                    seen.add(key)
-                    results.append(item)
-
-        # Add any highlighted lines that are not part of enumerated comments
+        page_highlights = []
         for h in highlights:
             if h["page"] != pi:
                 continue
-            matched = False
-            for c in comments:
-                for ln in c["lines"]:
-                    if intersects(ln["bbox"], h["rect"]):
-                        matched = True
-                        break
-                if matched:
-                    break
-            if matched:
+            label = classify_single_color(
+                h["color"],
+                args.color_threshold,
+                target_colors,
+                yellow_rgb,
+                green_rgb,
+                blue_rgb,
+                light_blue_rgb,
+            )
+            if not label:
                 continue
-
-            colors = []
-            if "yellow" in target_colors and is_color(
-                h["color"], yellow_rgb, args.yellow_threshold
-            ):
-                colors.append("yellow")
-            if "light-blue" in target_colors and is_color(
-                h["color"], light_blue_rgb, args.light_blue_threshold
-            ):
-                colors.append("light blue")
-            if not colors:
+            lines = extract_highlight_text(page, h["rect"])
+            if not lines:
                 continue
-
-            for line in extract_highlight_text(page, h["rect"]):
-                item = {
-                    "page": pi,
-                    "comment": None,
-                    "colors": colors,
-                    "text": line,
+            page_highlights.append(
+                {
+                    "rect": rect_to_tuple(h["rect"]),
+                    "color": label,
+                    "lines": lines,
                 }
-                key = (item["page"], item["comment"], item["text"])
-                if key not in seen:
-                    seen.add(key)
-                    results.append(item)
+            )
+
+        if not page_highlights:
+            continue
+
+        lines = extract_lines(page)
+        for line in lines:
+            line_rect = line["lines"][0]["bbox"]
+            highlighted = False
+            intervals = []
+            for h in page_highlights:
+                if not intersects(line_rect, h["rect"]):
+                    continue
+                highlighted = True
+                x0 = max(line_rect[0], h["rect"][0])
+                x1 = min(line_rect[2], h["rect"][2])
+                if x1 > x0:
+                    intervals.append((x0, x1))
+            line["highlighted_any"] = highlighted
+            if not highlighted:
+                line["has_unhighlighted_gap"] = False
+                line["has_unhighlighted_after"] = False
+                line["highlighted_max_x"] = None
+                continue
+
+            intervals.sort()
+            merged = []
+            for start, end in intervals:
+                if not merged or start > merged[-1][1]:
+                    merged.append([start, end])
+                else:
+                    merged[-1][1] = max(merged[-1][1], end)
+            covered = sum(end - start for start, end in merged)
+            line_width = max(1.0, line_rect[2] - line_rect[0])
+            coverage_ratio = covered / line_width
+            highlighted_max_x = max(end for _, end in merged)
+            line["highlighted_max_x"] = highlighted_max_x
+            line["has_unhighlighted_gap"] = coverage_ratio < 0.95
+            line["has_unhighlighted_after"] = (line_rect[2] - highlighted_max_x) > max(
+                6.0, line_width * 0.1
+            )
+
+        page_highlights.sort(key=lambda h: (h["rect"][1], h["rect"][0]))
+        grouped = []
+        for item in page_highlights:
+            if (
+                grouped
+                and grouped[-1]["color"] == item["color"]
+                and should_merge_rects(grouped[-1]["last_rect"], item["rect"], lines)
+            ):
+                grouped[-1]["lines"].extend(item["lines"])
+                x0, y0, x1, y1 = grouped[-1]["rect"]
+                nx0, ny0, nx1, ny1 = item["rect"]
+                grouped[-1]["rect"] = (min(x0, nx0), min(y0, ny0), max(x1, nx1), max(y1, ny1))
+                grouped[-1]["last_rect"] = item["rect"]
+            else:
+                item["last_rect"] = item["rect"]
+                grouped.append(item)
+
+        for item in grouped:
+            text = " ".join(item["lines"])
+            output = {
+                "page": pi,
+                "colors": [item["color"]],
+                "text": text,
+            }
+            key = (output["page"], output["text"])
+            if key not in seen:
+                seen.add(key)
+                results.append(output)
 
     if args.format == "json":
         print(json.dumps(results, indent=2))
         return
 
-    for item in results:
+    for i, item in enumerate(results, start=1):
         colors = ", ".join(item["colors"])
-        comment = item["comment"] if item["comment"] is not None else "n/a"
-        print(f"page {item['page']} comment {comment} colors {colors}")
-        print(item["text"])
-        print("---")
+        print(f"{i}. Page: {item['page']}, Color: {colors}")
+        print(f"\"{item['text']}\"")
+        print()
 
 
 if __name__ == "__main__":
