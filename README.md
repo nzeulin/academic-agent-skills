@@ -4,4 +4,4 @@ This repository contains skills for academic projects. The list of skills will b
 
 ## Skills
 
-- `pdf-highlighted-lines`: Extract highlighted lines or enumerated comments from PDF files, including color-specific filters (e.g., yellow or light blue) using PyMuPDF.
+- `pdf-highlighted-lines`: Extract highlighted lines from PDF files.
