@@ -32,8 +32,6 @@ def _run_script(script_path: Path, pdf_path: Path, output_format: str) -> str:
             str(pdf_path),
             "--format",
             output_format,
-            "--colors",
-            "all",
         ],
         check=True,
         capture_output=True,

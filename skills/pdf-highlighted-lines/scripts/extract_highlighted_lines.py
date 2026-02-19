@@ -32,28 +32,12 @@ def parse_args():
     )
     parser.add_argument("pdf", help="Path to PDF file")
     parser.add_argument(
-        "--colors",
-        nargs="+",
-        default=["all"],
-        help="Highlight colors to include: yellow, green, blue, light-blue, or all",
-    )
-    parser.add_argument(
         "--format",
         choices=["text", "json"],
         default="text",
         help="Output format",
     )
-    parser.add_argument(
-        "--color-threshold",
-        type=float,
-        default=0.35,
-        help="RGB distance threshold for colors",
-    )
     return parser.parse_args()
-
-
-def is_color(c, target, threshold):
-    return c is not None and dist(c, target) <= threshold
 
 
 def intersects(b1, b2):
@@ -87,42 +71,18 @@ def extract_highlight_text(page, rect):
     return lines
 
 
-def classify_color(c, threshold, target_colors, yellow_rgb, green_rgb, blue_rgb, light_blue_rgb):
-    if c is None:
-        return []
-    labels = []
-    if "yellow" in target_colors and is_color(c, yellow_rgb, threshold):
-        labels.append("yellow")
-    if "green" in target_colors and is_color(c, green_rgb, threshold):
-        labels.append("green")
-    if (
-        ("blue" in target_colors or "light-blue" in target_colors)
-        and (is_color(c, blue_rgb, threshold) or is_color(c, light_blue_rgb, threshold))
-    ):
-        labels.append("blue")
-    return labels
-
-
 def rect_to_tuple(rect):
     return (rect.x0, rect.y0, rect.x1, rect.y1)
 
 
-def normalize_label(label):
-    return "blue" if label == "light-blue" else label
-
-
-def classify_single_color(c, threshold, target_colors, yellow_rgb, green_rgb, blue_rgb, light_blue_rgb):
+def classify_nearest_color(c, color_table):
     if c is None:
         return None
-    if "yellow" in target_colors and is_color(c, yellow_rgb, threshold):
-        return "yellow"
-    if "green" in target_colors and is_color(c, green_rgb, threshold):
-        return "green"
-    if ("blue" in target_colors or "light-blue" in target_colors) and (
-        is_color(c, blue_rgb, threshold) or is_color(c, light_blue_rgb, threshold)
-    ):
-        return "blue"
-    return None
+    label, _ = min(
+        ((name, dist(c, rgb)) for name, rgb in color_table.items()),
+        key=lambda item: item[1],
+    )
+    return label
 
 
 def has_unhighlighted_gap_between(lines, upper_y, lower_y):
@@ -170,14 +130,16 @@ def main():
     args = parse_args()
     pymupdf = require_pymupdf()
 
-    all_color_names = {"yellow", "green", "blue", "light-blue"}
-    target_colors = set(args.colors)
-    if "all" in target_colors:
-        target_colors = set(all_color_names)
-    yellow_rgb = (1.0, 1.0, 0.0)
-    green_rgb = (0.0, 1.0, 0.0)
-    blue_rgb = (0.0, 1.0, 1.0)
-    light_blue_rgb = (0.6, 0.8, 1.0)
+    color_table = {
+        "yellow": (1.0, 1.0, 0.0),
+        "green": (0.0, 1.0, 0.0),
+        "blue": (0.0, 1.0, 1.0),
+        "light-blue": (0.6, 0.8, 1.0),
+        "red": (1.0, 0.0, 0.0),
+        "orange": (1.0, 0.6, 0.0),
+        "purple": (0.6, 0.2, 0.8),
+        "pink": (1.0, 0.6, 0.8),
+    }
 
     doc = pymupdf.open(args.pdf)
     highlights = []
@@ -210,15 +172,7 @@ def main():
         for h in highlights:
             if h["page"] != pi:
                 continue
-            label = classify_single_color(
-                h["color"],
-                args.color_threshold,
-                target_colors,
-                yellow_rgb,
-                green_rgb,
-                blue_rgb,
-                light_blue_rgb,
-            )
+            label = classify_nearest_color(h["color"], color_table)
             if not label:
                 continue
             lines = extract_highlight_text(page, h["rect"])
