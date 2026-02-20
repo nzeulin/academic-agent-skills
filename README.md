@@ -5,3 +5,4 @@ This repository contains skills for academic projects. The list of skills will b
 ## Skills
 
 - `pdf-highlighted-lines`: Extract highlighted lines from PDF files.
+- `pdf-extract-comments`: Extracts comments from PDF files.

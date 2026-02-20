@@ -1,0 +1,22 @@
+[
+  {
+    "page": 1,
+    "reference": "dolor sit amet, consectetur",
+    "text": "This is my comment #1"
+  },
+  {
+    "page": 1,
+    "reference": " a consectetur nulla ultricies",
+    "text": "This is my comment #2"
+  },
+  {
+    "page": 1,
+    "reference": "metus.\nDuis sed dolor ultricies, fringilla tortor vitae",
+    "text": "This is my comment #3"
+  },
+  {
+    "page": 1,
+    "reference": "2. Duis fermentum mauris id nibh pharetra suscipit.",
+    "text": "This is my comment #4"
+  }
+]
